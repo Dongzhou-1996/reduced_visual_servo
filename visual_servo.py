@@ -21,7 +21,6 @@ class RobotControl:
         self.sk.connect(arm_server_addr)
         self.sk.setblocking(0)
 
-
         self.shutdown_lock = threading.Lock()
         self.shutdown_flag = False
 
@@ -29,6 +28,7 @@ class RobotControl:
         self.info_q = None
         self.info_qv = None
         self.info_pos = None
+        self.info_end = None
 
 
         self.cmd_sem = threading.Semaphore(value=0)
@@ -57,15 +57,19 @@ class RobotControl:
                 q = np.asarray(struct.unpack('!6d', pkt[252:300]))
                 qv = np.asarray(struct.unpack('!6d', pkt[300:348]))
                 pos = np.asarray(struct.unpack('!6d', pkt[444:492]))
+                end_effector_inform = np.array(struct.unpack('!6d', pkt[588:636]))
 
                 self.info_lock.acquire()
                 self.info_q = q
                 self.info_qv = qv
                 self.info_pos = pos
+                self.info_end = end_effector_inform
                 self.info_lock.release()
 
                 bufs.clear()
                 nremains = 1116
+
+            # time.sleep(0.01)
 
             self.shutdown_lock.acquire()
             shutdown_flag = self.shutdown_flag
@@ -106,6 +110,7 @@ class RobotControl:
 
         th1.join()
         th2.join()
+        print('robot control thread closed.')
 
 
     def cleanup(self):
@@ -125,6 +130,23 @@ class RobotControl:
         self.info_lock.release()
         return q, qv, pos
 
+    def get_arm_info(self):
+        self.info_lock.acquire()
+        q = self.info_q
+        qv = self.info_qv
+        pos = self.info_pos
+        end = self.info_end
+        self.info_lock.release()
+        tvec = end[0:3].reshape(3, 1)
+        rvec = end[3:6]
+
+        rotation_matirx, jacobi = cv2.Rodrigues(rvec)
+
+        bMe = np.vstack((np.hstack((rotation_matirx, tvec)), [0, 0, 0, 1]))
+
+        return bMe, q, qv, pos
+
+
     def shutdown(self):
         self.shutdown_lock.acquire()
         self.shutdown_flag = True
@@ -140,7 +162,7 @@ class MyControl:
         self._shutdown_lock = threading.Lock()
         self._shutdown_flag = False
 
-    def _test_ctrl5x(self, pe, l=0.3, dt=0.1):
+    def _test_ctrl5x(self, pe, l=0.3, dt=0.08):
         pe = pe.reshape(-1, 1).squeeze()
         i = 0
         FLAG = True
@@ -162,7 +184,7 @@ class MyControl:
             thetap = ac.position(pe1, qt, pez, l)
 
             qv = thetap - qt
-            if (np.max(qv) > 0.66):
+            if (np.max(qv) > 0.5):
                 qv = 0.3 * qv / np.linalg.norm(qv)
             qv = qv.reshape(-1, 1)
             qvp = ac.PZJC(qt)
@@ -208,7 +230,6 @@ class MyControl:
         self._shutdown_lock.acquire()
         self._shutdown_flag = True
         self._shutdown_lock.release()
-
 
 
 class Multi_Thread(threading.Thread):
@@ -308,21 +329,10 @@ if __name__ == '__main__':
     rcthread = threading.Thread(target=rc.start)
     rcthread.start()
 
-    # initialize the connection with UR5
-    server_ip = "192.168.1.3"
-    server_port = 30013
-    # server_port1 = 30002
-    global server_addr, server_addr1
-    server_addr = (server_ip, server_port)
-    # server_addr1 = (server_ip, server_port1)
-    # construct tcp socket
-    global tcp_socket
-    # global tcp_socket_ctrl
-    tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # tcp_socket_ctrl = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    # connect to UR5
-    tcp_socket.connect(server_addr)
-    # tcp_socket_ctrl.connect(server_addr1)
+    armctrl = MyControl(rc)
+    acth = threading.Thread(target=armctrl.start)
+    acth.start()
+
 
     # initialize robot arm
     # EIH.robot_arm_initialization(server_addr=server_addr)
@@ -344,23 +354,41 @@ if __name__ == '__main__':
     # initialize 2D tracker
     kcf = KCFTracker(True, True, True)
 
-    object_points_base_file = os.path.join(os.path.abspath(os.curdir), 'object_points_in_base.txt')
+    object_name = 'asteroid_2'
+
+    # object point in base coordinate file
+    object_points_dir = os.path.join(os.path.abspath(os.curdir), 'tracklets', object_name)
+    if not os.path.exists(object_points_dir):
+        print('=> object points directory is not existed! It will be created ...')
+        os.makedirs(object_points_dir)
+    else:
+        print('=> object points directory is existed!')
+    object_points_base_file = os.path.join(object_points_dir, 'object_points_in_base.txt')
+    object_points_img_file = os.path.join(object_points_dir, 'object_points_in_image.txt')
+
     object_points_base = []
+    object_points_2d = []
     object_points_end_kf = []
+
+    # tracking image records
+    tracking_results_dir = os.path.join(os.path.abspath(os.curdir), 'tracking_results', object_name)
+    if not os.path.exists(tracking_results_dir):
+        print('=> tracking result directory is not existed! It will be created ...')
+        os.makedirs(tracking_results_dir)
+    else:
+        print('=> tracking result directory is existed!')
+
 
     initialization = 1
     thread_init = True
 
     global obj_point_base
     global obj_point_end_kf
-    # Thread initialization
-    #arm_control_thread = Multi_Thread(ac.position_ctrl5x)
 
-    armctrl = MyControl(rc)
-    acth = threading.Thread(target=armctrl.start)
-    acth.start()
-
+    frame = 0
     while(cv2.waitKey(3) != 27):
+        frame += 1
+        print('=> Frame: {:06d}'.format(frame))
         left_image = sl.Mat()
         Point_cloud = sl.Mat()
         # Runtime parameters
@@ -395,6 +423,8 @@ if __name__ == '__main__':
                               color=(0, 255, 0), thickness=2)
                 # acquire object points
                 left_roi = init_roi
+                center_point = (left_roi[0] + left_roi[2] // 2,
+                                left_roi[1] + left_roi[3] // 2)
                 bottom_left = (init_roi[0], init_roi[1] + init_roi[3])
                 top_left = (init_roi[0], init_roi[1])
                 offset = 20
@@ -432,18 +462,18 @@ if __name__ == '__main__':
                 object_points_end_kf.append(obj_point_end_kf)
 
                 # transfer object point from camera coordinate system to base coordinate system
-                bMe, _, _, _ = get_arm_information(tcp_socket)
+                bMe, _, _, _ = rc.get_arm_info()
                 # obj_point_base = obj_point_end
-                obj_point_base = np.matmul(bMe, obj_point_end_kf)
+                obj_point_base = np.matmul(bMe, obj_point_end_kf).reshape(1, -1)
                 print('Initial object point in base: {}'.format(obj_point_base))
                 object_points_base.append(obj_point_base)
-
-                # ac.speed_ctrl(tcp_socket, obj_point_end, 0.8, 0.1)
+                object_points_2d.append(center_point)
 
                 cv2.putText(init_frame, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(object_point[0][0],
                                                                            object_point[1][0],
                                                                            object_point[2][0]),
                             top_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
+                cv2.circle(left_img, center_point, 1, (0, 0, 255), 2)
                 cv2.imshow('visual servo initialization', init_frame)
 
                 kcf.init(list(init_roi), left_img)
@@ -499,30 +529,15 @@ if __name__ == '__main__':
             object_points_end_kf.append(obj_point_end_kf)
 
             # transfer object point from camera coordinate system to base coordinate system
-            bMe, q, qv, pos = get_arm_information(tcp_socket)
+            bMe, q, qv, pos = rc.get_arm_info()
             # obj_point_base = obj_point_end
-            obj_point_base = np.matmul(bMe, obj_point_end_kf).reshape(1, -1).squeeze()
-            # ac.position_ctrl5x(obj_point_base, 0.3, 0.1)
+            obj_point_base = np.matmul(bMe, obj_point_end_kf).reshape(1, -1)
 
-            print('obejct point in base: \n {}'.format(obj_point_base))
+            print('object point in base: \n {}'.format(obj_point_base))
             object_points_base.append(obj_point_base)
+            object_points_2d.append(center_point)
 
             armctrl.set_pe(obj_point_base)
-
-            # if thread_init:
-            #     arm_control_thread.input(args=[tcp_socket, obj_point_base])
-            #     arm_control_thread.setDaemon(True)
-            #     arm_control_thread.start()
-            #     thread_init = False
-            # elif arm_control_thread.is_alive():
-            #     print('=> arm still not reach to the expected position!!')
-            # else:
-            #     arm_control_thread.input(args=[tcp_socket, obj_point_base])
-            #     arm_control_thread.run()
-
-            # # arm control
-            # ac.speed_ctrl(tcp_socket, obj_point_end.reshape(-1, 1), 0.8, 0.1)
-
 
             end_time = time.time()
             fps = 1 / (end_time - start_time)
@@ -536,14 +551,20 @@ if __name__ == '__main__':
                                                                        object_point[1][0],
                                                                        object_point[2][0]),
                         top_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
-            cv2.putText(left_img, 'FPS: {:0.2f}'.format(fps),
-                        (0, height), cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
+            # cv2.putText(left_img, 'FPS: {:0.2f}'.format(fps),
+            #             (0, height), cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
             cv2.circle(left_img, center_point, 1, (0, 0, 255), 2)
             cv2.namedWindow('tracking result displaying', cv2.WINDOW_GUI_EXPANDED)
             cv2.imshow('tracking result displaying', left_img)
 
+            if frame % 5 == 0:
+                img_path = os.path.join(tracking_results_dir, '{:06d}.jpg'.format(frame))
+                cv2.imwrite(img_path, left_img)
 
-    object_points_base = np.array(object_points_base)
+
+
+    object_points_base = np.array(object_points_base).reshape(-1, 4).squeeze()
+    object_points_2d = np.array(object_points_2d).reshape(-1, 2).squeeze()
     # object_points_end_kf = np.array(object_points_end_kf).reshape(-1, 3)
     # fig = plt.figure()
     # ax = Axes3D(fig)
@@ -554,21 +575,22 @@ if __name__ == '__main__':
     # plt.ioff()/
     # plt.show()
     np.savetxt(object_points_base_file, object_points_base, fmt='%0.6f', delimiter=',')
+    np.savetxt(object_points_img_file, object_points_2d, fmt='%0.6f', delimiter=',')
     print('=> Successfully write down object points in end-effector!!!')
 
-    rc.shutdown()
-    armctrl.shutdown()
 
+    armctrl.shutdown()
     print("wait for armctrl thread...")
+    # acth.join()
     acth.join()
 
+    rc.shutdown()
     print("wait for rc thread...")
     rcthread.join()
     rc.cleanup()
     print("rc thread term.")
-    #rc.cleanup()
 
-    exit(0)
+    exit(1)
 
 
 
