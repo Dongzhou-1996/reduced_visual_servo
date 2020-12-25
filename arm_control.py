@@ -620,7 +620,7 @@ def position(pe,qt,rv,l):
     a6 = qt[5]
     p3 = pe - np.array([0, 0, 0.5])
     o3e = l * p3 / np.linalg.norm(p3) + np.array([0, 0, 0.5])
-    print('o3e: {}'.format(o3e))
+    # print('o3e: {}'.format(o3e))
     theta123 = nijieo3(o3e)
     q123 = np.array([a1, a2, a3])
     q123_next = njxz(q123, theta123)
@@ -643,7 +643,7 @@ def position(pe,qt,rv,l):
     theta45 = nijie45(ez3)
     qt45 = np.array([a5, a6])
     # theta45 = njxz(qt45, theta45)
-    print('theta45',theta45)
+    # print('theta45',theta45)
     theta4 = theta45[1,0]
     theta5 = theta45[1,1]
     T4 = np.array([[np.cos(theta4), 0, np.sin(theta4), 0],

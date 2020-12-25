@@ -14,6 +14,203 @@ import matplotlib.pyplot as plt
 import struct
 
 
+class RobotControl:
+    def __init__(self):
+        arm_server_addr = ("192.168.1.3", 30003)
+        self.sk = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sk.connect(arm_server_addr)
+        self.sk.setblocking(0)
+
+
+        self.shutdown_lock = threading.Lock()
+        self.shutdown_flag = False
+
+        self.info_lock = threading.Lock()
+        self.info_q = None
+        self.info_qv = None
+        self.info_pos = None
+
+
+        self.cmd_sem = threading.Semaphore(value=0)
+        self.cmd_lock = threading.Lock()
+        self.cmd_queue = []
+
+    def thread_read(self):
+        print("read thread started.")
+        nremains = 1116
+        bufs = []
+        while True:
+            try:
+                buf = self.sk.recv(nremains)
+                if len(buf) != 0:
+                    bufs.append(buf)
+                    nremains -= len(buf)
+
+            except Exception:
+                pass
+
+            if nremains == 0:
+                pkt = bufs[0]
+                for i_buf in bufs[1:]:
+                    pkt += i_buf
+                #print(pkt)
+                q = np.asarray(struct.unpack('!6d', pkt[252:300]))
+                qv = np.asarray(struct.unpack('!6d', pkt[300:348]))
+                pos = np.asarray(struct.unpack('!6d', pkt[444:492]))
+
+                self.info_lock.acquire()
+                self.info_q = q
+                self.info_qv = qv
+                self.info_pos = pos
+                self.info_lock.release()
+
+                bufs.clear()
+                nremains = 1116
+
+            self.shutdown_lock.acquire()
+            shutdown_flag = self.shutdown_flag
+            self.shutdown_lock.release()
+            if shutdown_flag:
+                break
+            pass
+
+
+        print("read thread closed.")
+        pass
+
+    def thread_write(self):
+        print("write thread started")
+        while True:
+            has_cmd = self.cmd_sem.acquire(timeout=0.5)
+            if has_cmd:
+
+                self.cmd_lock.acquire()
+                cmd = self.cmd_queue.pop(0)
+                self.cmd_lock.release()
+                #print("cmd:" + cmd)
+                self.sk.send(cmd.encode())
+                pass
+            self.shutdown_lock.acquire()
+            shutdown_flag = self.shutdown_flag
+            self.shutdown_lock.release()
+            if shutdown_flag:
+                break
+        print("write thread closed.")
+
+
+    def start(self):
+        th1 = threading.Thread(target=self.thread_write)
+        th1.start()
+        th2 = threading.Thread(target=self.thread_read)
+        th2.start()
+
+        th1.join()
+        th2.join()
+
+
+    def cleanup(self):
+        self.sk.close()
+
+    def cmd(self, c: str):
+        self.cmd_lock.acquire()
+        self.cmd_queue.append(c)
+        self.cmd_sem.release()
+        self.cmd_lock.release()
+
+    def get_info(self):
+        self.info_lock.acquire()
+        q = self.info_q
+        qv = self.info_qv
+        pos = self.info_pos
+        self.info_lock.release()
+        return q, qv, pos
+
+    def shutdown(self):
+        self.shutdown_lock.acquire()
+        self.shutdown_flag = True
+        self.shutdown_lock.release()
+
+
+class MyControl:
+    def __init__(self, xrc: RobotControl):
+        self._rc = xrc
+
+        self._pelock = threading.Lock()
+        self._pe = None
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_flag = False
+
+    def _test_ctrl5x(self, pe, l=0.3, dt=0.1):
+        pe = pe.reshape(-1, 1).squeeze()
+        i = 0
+        FLAG = True
+        while FLAG:
+            # print('i: {}'.format(i))
+            i = i + 1
+
+            while True:
+                qt, info_qv, pt = self._rc.get_info()
+                if qt is None:
+                    time.sleep(0.001)
+                    continue
+                break
+
+
+            pe1 = np.array([pe[0], pe[1], pe[2]])
+            pt1 = np.array([pt[0], pt[1], pt[2]])
+            pez = ac.posture(pe1, pt1)
+            thetap = ac.position(pe1, qt, pez, l)
+
+            qv = thetap - qt
+            if (np.max(qv) > 0.66):
+                qv = 0.3 * qv / np.linalg.norm(qv)
+            qv = qv.reshape(-1, 1)
+            qvp = ac.PZJC(qt)
+            qvp = qvp.reshape(-1, 1)
+
+            qve = qv + qvp
+
+            qa = np.linalg.norm(qvp) + 0.5  # qvp越大越接近碰撞，此时关节速度也相应增大
+            command = ac.ctrl_speedj(qve, qa, dt)
+            self._rc.cmd(command)
+
+            qt, info_qv, pt = self._rc.get_info()
+
+            Tt = ac.ZJ(qt)
+            rvt = ac.m2rv(Tt[0:3, 0:3])
+            zx = ac.rv2eu(pez) - ac.rv2eu(rvt)
+            # print('zx=', zx)
+            if np.linalg.norm(zx) < 0.1:
+                FLAG = False
+
+    def set_pe(self, pe):
+        self._pelock.acquire()
+        self._pe = pe
+        self._pelock.release()
+
+    def start(self):
+        while True:
+            self._pelock.acquire()
+            pe = self._pe
+            self._pelock.release()
+            if pe is not None:
+                self._test_ctrl5x(pe)
+            else:
+                time.sleep(0.001)
+
+            self._shutdown_lock.acquire()
+            shutdown = self._shutdown_flag
+            self._shutdown_lock.release()
+            if shutdown:
+                break
+
+    def shutdown(self):
+        self._shutdown_lock.acquire()
+        self._shutdown_flag = True
+        self._shutdown_lock.release()
+
+
+
 class Multi_Thread(threading.Thread):
     def __init__(self, func, args=[]):
         super(Multi_Thread, self).__init__()
@@ -95,6 +292,9 @@ def tracklet_display(ax, tracklet, color='r', size=10, alpha=0.5, marker='o', la
     ax.set_xlabel('X', fontdict={'size': size, 'color': 'blue'})
     return
 
+
+
+
 if __name__ == '__main__':
     # initial camera
     init_params = sl.InitParameters()
@@ -103,6 +303,10 @@ if __name__ == '__main__':
     init_params.camera_resolution = sl.RESOLUTION.RESOLUTION_HD1080
     init_params.camera_fps = 30
     zed = sl.Camera()
+
+    rc = RobotControl()
+    rcthread = threading.Thread(target=rc.start)
+    rcthread.start()
 
     # initialize the connection with UR5
     server_ip = "192.168.1.3"
@@ -150,8 +354,11 @@ if __name__ == '__main__':
     global obj_point_base
     global obj_point_end_kf
     # Thread initialization
-    arm_control_thread = Multi_Thread(ac.position_ctrl5x)
+    #arm_control_thread = Multi_Thread(ac.position_ctrl5x)
 
+    armctrl = MyControl(rc)
+    acth = threading.Thread(target=armctrl.start)
+    acth.start()
 
     while(cv2.waitKey(3) != 27):
         left_image = sl.Mat()
@@ -300,17 +507,18 @@ if __name__ == '__main__':
             print('obejct point in base: \n {}'.format(obj_point_base))
             object_points_base.append(obj_point_base)
 
+            armctrl.set_pe(obj_point_base)
 
-            if thread_init:
-                arm_control_thread.input(args=[tcp_socket, obj_point_base])
-                arm_control_thread.setDaemon(True)
-                arm_control_thread.start()
-                thread_init = False
-            elif arm_control_thread.is_alive():
-                print('=> arm still not reach to the expected position!!')
-            else:
-                arm_control_thread.input(args=[tcp_socket, obj_point_base])
-                arm_control_thread.run()
+            # if thread_init:
+            #     arm_control_thread.input(args=[tcp_socket, obj_point_base])
+            #     arm_control_thread.setDaemon(True)
+            #     arm_control_thread.start()
+            #     thread_init = False
+            # elif arm_control_thread.is_alive():
+            #     print('=> arm still not reach to the expected position!!')
+            # else:
+            #     arm_control_thread.input(args=[tcp_socket, obj_point_base])
+            #     arm_control_thread.run()
 
             # # arm control
             # ac.speed_ctrl(tcp_socket, obj_point_end.reshape(-1, 1), 0.8, 0.1)
@@ -347,6 +555,19 @@ if __name__ == '__main__':
     # plt.show()
     np.savetxt(object_points_base_file, object_points_base, fmt='%0.6f', delimiter=',')
     print('=> Successfully write down object points in end-effector!!!')
+
+    rc.shutdown()
+    armctrl.shutdown()
+
+    print("wait for armctrl thread...")
+    acth.join()
+
+    print("wait for rc thread...")
+    rcthread.join()
+    rc.cleanup()
+    print("rc thread term.")
+    #rc.cleanup()
+
     exit(0)
 
 
