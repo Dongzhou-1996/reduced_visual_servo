@@ -365,6 +365,7 @@ if __name__ == '__main__':
         print('=> object points directory is existed!')
     object_points_base_file = os.path.join(object_points_dir, 'object_points_in_base.txt')
     object_points_img_file = os.path.join(object_points_dir, 'object_points_in_image.txt')
+    object_points_end_file = os.path.join(object_points_dir, 'object_points_in_end.txt')
 
     object_points_base = []
     object_points_2d = []
@@ -469,9 +470,9 @@ if __name__ == '__main__':
                 object_points_base.append(obj_point_base)
                 object_points_2d.append(center_point)
 
-                cv2.putText(init_frame, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(object_point[0][0],
-                                                                           object_point[1][0],
-                                                                           object_point[2][0]),
+                cv2.putText(init_frame, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(obj_point_base[0, 0],
+                                                                           obj_point_base[0, 1],
+                                                                           obj_point_base[0, 2]),
                             top_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
                 cv2.circle(left_img, center_point, 1, (0, 0, 255), 2)
                 cv2.imshow('visual servo initialization', init_frame)
@@ -542,15 +543,15 @@ if __name__ == '__main__':
             end_time = time.time()
             fps = 1 / (end_time - start_time)
 
-            # cv2.putText(left_img,
-            #             '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(obj_point_base[0],
-            #                                                  obj_point_base[1],
-            #                                                  obj_point_base[2]),
-            #             bottom_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 0, 0), 2)
-            cv2.putText(left_img, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(object_point[0][0],
-                                                                       object_point[1][0],
-                                                                       object_point[2][0]),
-                        top_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
+            cv2.putText(left_img,
+                        '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(obj_point_base[0, 0],
+                                                             obj_point_base[0, 1],
+                                                             obj_point_base[0, 2]),
+                        bottom_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 0, 0), 2)
+            # cv2.putText(left_img, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(object_point[0][0],
+            #                                                            object_point[1][0],
+            #                                                            object_point[2][0]),
+            #             top_left, cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
             # cv2.putText(left_img, 'FPS: {:0.2f}'.format(fps),
             #             (0, height), cv2.FONT_HERSHEY_PLAIN, 4, (255, 255, 0), 2)
             cv2.circle(left_img, center_point, 1, (0, 0, 255), 2)
@@ -564,7 +565,9 @@ if __name__ == '__main__':
 
 
     object_points_base = np.array(object_points_base).reshape(-1, 4).squeeze()
+    object_points_end_kf = np.array(object_points_end_kf).reshape(-1, 4).squeeze()
     object_points_2d = np.array(object_points_2d).reshape(-1, 2).squeeze()
+
     # object_points_end_kf = np.array(object_points_end_kf).reshape(-1, 3)
     # fig = plt.figure()
     # ax = Axes3D(fig)
@@ -574,6 +577,7 @@ if __name__ == '__main__':
     # plt.legend()
     # plt.ioff()/
     # plt.show()
+    np.savetxt(object_points_end_file, object_points_end_kf, fmt='%0.6f', delimiter=',')
     np.savetxt(object_points_base_file, object_points_base, fmt='%0.6f', delimiter=',')
     np.savetxt(object_points_img_file, object_points_2d, fmt='%0.6f', delimiter=',')
     print('=> Successfully write down object points in end-effector!!!')
