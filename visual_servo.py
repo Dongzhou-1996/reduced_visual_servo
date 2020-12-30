@@ -162,7 +162,7 @@ class MyControl:
         self._shutdown_lock = threading.Lock()
         self._shutdown_flag = False
 
-    def _test_ctrl5x(self, pe, l=0.3, dt=0.08):
+    def _test_ctrl5x(self, pe, l=0.3, dt=0.06):
         pe = pe.reshape(-1, 1).squeeze()
         i = 0
         FLAG = True
@@ -354,7 +354,7 @@ if __name__ == '__main__':
     # initialize 2D tracker
     kcf = KCFTracker(True, True, True)
 
-    object_name = 'asteroid_2'
+    object_name = 'satellite'
 
     # object point in base coordinate file
     object_points_dir = os.path.join(os.path.abspath(os.curdir), 'tracklets', object_name)
@@ -363,6 +363,8 @@ if __name__ == '__main__':
         os.makedirs(object_points_dir)
     else:
         print('=> object points directory is existed!')
+    arm_pos_file = os.path.join(object_points_dir, 'arm_pos_in_base.txt')
+    arm_q_file = os.path.join(object_points_dir, 'arm_q.txt')
     object_points_base_file = os.path.join(object_points_dir, 'object_points_in_base.txt')
     object_points_img_file = os.path.join(object_points_dir, 'object_points_in_image.txt')
     object_points_end_file = os.path.join(object_points_dir, 'object_points_in_end.txt')
@@ -370,6 +372,8 @@ if __name__ == '__main__':
     object_points_base = []
     object_points_2d = []
     object_points_end_kf = []
+    arm_pos = []
+    arm_q = []
 
     # tracking image records
     tracking_results_dir = os.path.join(os.path.abspath(os.curdir), 'tracking_results', object_name)
@@ -463,12 +467,15 @@ if __name__ == '__main__':
                 object_points_end_kf.append(obj_point_end_kf)
 
                 # transfer object point from camera coordinate system to base coordinate system
-                bMe, _, _, _ = rc.get_arm_info()
+                bMe, q, _, pos = rc.get_arm_info()
                 # obj_point_base = obj_point_end
                 obj_point_base = np.matmul(bMe, obj_point_end_kf).reshape(1, -1)
                 print('Initial object point in base: {}'.format(obj_point_base))
                 object_points_base.append(obj_point_base)
                 object_points_2d.append(center_point)
+                arm_pos.append(pos)
+                arm_q.append(q)
+
 
                 cv2.putText(init_frame, '[{:0.2f}, {:0.2f}, {:0.2f}]'.format(obj_point_base[0, 0],
                                                                            obj_point_base[0, 1],
@@ -537,6 +544,8 @@ if __name__ == '__main__':
             print('object point in base: \n {}'.format(obj_point_base))
             object_points_base.append(obj_point_base)
             object_points_2d.append(center_point)
+            arm_pos.append(pos)
+            arm_q.append(q)
 
             armctrl.set_pe(obj_point_base)
 
@@ -567,6 +576,8 @@ if __name__ == '__main__':
     object_points_base = np.array(object_points_base).reshape(-1, 4).squeeze()
     object_points_end_kf = np.array(object_points_end_kf).reshape(-1, 4).squeeze()
     object_points_2d = np.array(object_points_2d).reshape(-1, 2).squeeze()
+    arm_pos = np.array(arm_pos).reshape(-1, 6).squeeze()
+    arm_bMe = np.array(bMe)
 
     # object_points_end_kf = np.array(object_points_end_kf).reshape(-1, 3)
     # fig = plt.figure()
@@ -580,6 +591,9 @@ if __name__ == '__main__':
     np.savetxt(object_points_end_file, object_points_end_kf, fmt='%0.6f', delimiter=',')
     np.savetxt(object_points_base_file, object_points_base, fmt='%0.6f', delimiter=',')
     np.savetxt(object_points_img_file, object_points_2d, fmt='%0.6f', delimiter=',')
+    np.savetxt(arm_pos_file, arm_pos, fmt='%0.6f', delimiter=',')
+    np.savetxt(arm_q_file, arm_q, fmt='%0.6f', delimiter=',')
+
     print('=> Successfully write down object points in end-effector!!!')
 
 
